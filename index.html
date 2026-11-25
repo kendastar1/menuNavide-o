@@ -17,6 +17,7 @@ body { overflow: hidden; }
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   touch-action: pan-y;
+  scroll-behavior: auto;
   background: var(--bg);
   outline: none;
 }
@@ -24,6 +25,9 @@ body { overflow: hidden; }
 .hoja {
   box-sizing: border-box;
   height: 100%;
+  height: 100dvh;
+  min-height: 100%;
+  flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
   scroll-snap-align: start;
   scroll-snap-stop: always;
@@ -34,6 +38,9 @@ body { overflow: hidden; }
   width: 100%; height: 100%;
   object-fit: contain;
   user-select: none; -webkit-user-select: none;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-touch-callout: none;
 }
 </style>
 </head>
@@ -53,39 +60,30 @@ body { overflow: hidden; }
 <script>
 (function(){
   var s = document.getElementById('hojas');
+  var imgs = s.querySelectorAll('img');
   var total = s.children.length;
-  var startIdx = 0, timer = null, animating = false, touching = false;
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Decodifica todas las hojas desde el inicio para que ninguna "salte" al aparecer
+  for (var i = 0; i < imgs.length; i++) {
+    imgs[i].loading = 'eager';
+    if (imgs[i].decode) { imgs[i].decode().catch(function(){}); }
+  }
   function h() { return s.clientHeight; }
   function cur() { return Math.round(s.scrollTop / h()); }
   function clamp(i) { return Math.max(0, Math.min(total - 1, i)); }
   function goTo(i) {
-    i = clamp(i);
-    animating = true;
-    s.scrollTo({ top: i * h(), behavior: reduce ? 'auto' : 'smooth' });
-    setTimeout(function(){ animating = false; startIdx = cur(); }, reduce ? 50 : 450);
+    s.scrollTo({ top: clamp(i) * h(), behavior: reduce ? 'auto' : 'smooth' });
   }
-  function settle() {
-    if (touching || animating) return;
-    var i = cur();
-    i = clamp(Math.max(startIdx - 1, Math.min(startIdx + 1, i)));
-    if (Math.abs(s.scrollTop - i * h()) > 1) goTo(i); else startIdx = i;
-  }
-  s.addEventListener('scroll', function(){
-    if (animating) return;
-    clearTimeout(timer);
-    timer = setTimeout(settle, 90);
-  }, { passive: true });
-  s.addEventListener('touchstart', function(){ touching = true; startIdx = cur(); clearTimeout(timer); }, { passive: true });
-  s.addEventListener('touchend', function(){ touching = false; clearTimeout(timer); timer = setTimeout(settle, 90); }, { passive: true });
-  s.addEventListener('touchcancel', function(){ touching = false; timer = setTimeout(settle, 90); }, { passive: true });
+  // Touch (celular): deslizamiento 100% nativo con CSS scroll-snap, sin JS que interfiera.
+  // Rueda del mouse (PC): una hoja por gesto.
   var wheelLock = false;
   s.addEventListener('wheel', function(e){
+    if (e.ctrlKey) return;
     e.preventDefault();
     if (wheelLock || Math.abs(e.deltaY) < 4) return;
     wheelLock = true;
     goTo(cur() + (e.deltaY > 0 ? 1 : -1));
-    setTimeout(function(){ wheelLock = false; }, 650);
+    setTimeout(function(){ wheelLock = false; }, 700);
   }, { passive: false });
   s.addEventListener('keydown', function(e){
     var k = e.key, d = 0;
@@ -95,7 +93,12 @@ body { overflow: hidden; }
     else if (k === 'End') { e.preventDefault(); goTo(total - 1); return; }
     if (d) { e.preventDefault(); goTo(cur() + d); }
   });
-  window.addEventListener('resize', function(){ s.scrollTop = cur() * h(); });
+  var rt;
+  window.addEventListener('resize', function(){
+    clearTimeout(rt);
+    var i = cur();
+    rt = setTimeout(function(){ s.scrollTo({ top: i * h(), behavior: 'auto' }); }, 120);
+  });
   try { s.focus({ preventScroll: true }); } catch (e) {}
 })();
 </script>
