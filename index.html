@@ -5,43 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Catálogo de Navidad</title>
 <style>
-/* Layout: una hoja del PDF por pantalla, el deslizamiento se detiene en cada hoja */
-:root { --bg: #c32524; --fg: #ffffff; }
-html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
-body { overflow: hidden; }
-.scroller {
-  position: fixed; inset: 0;
-  overflow-y: auto; overflow-x: hidden;
-  scroll-snap-type: y mandatory;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  touch-action: pan-y;
-  scroll-behavior: auto;
-  background: var(--bg);
-  outline: none;
-}
-.scroller::-webkit-scrollbar { display: none; }
-.hoja {
-  box-sizing: border-box;
-  height: 100%;
-  height: 100dvh;
-  min-height: 100%;
-  flex: 0 0 auto;
+:root { --bg: #c32524; --fg: #ffffff; --vh: 100vh; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); overflow: hidden;
+  overscroll-behavior: none; position: fixed; inset: 0; width: 100%; }
+.scroller { position: fixed; top: 0; left: 0; width: 100%; height: var(--vh); overflow: hidden;
+  touch-action: none; background: var(--bg); outline: none; user-select: none; -webkit-user-select: none; }
+.hoja { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0;
   display: flex; align-items: center; justify-content: center;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-  padding: 0;
-}
-.hoja img {
-  display: block;
-  width: 100%; height: 100%;
-  object-fit: contain;
-  user-select: none; -webkit-user-select: none;
-  transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-touch-callout: none;
-}
+  will-change: transform; visibility: hidden; backface-visibility: hidden; }
+.hoja.vis { visibility: visible; }
+.hoja img { display: block; width: 100%; height: 100%; object-fit: contain;
+  pointer-events: none; -webkit-user-drag: none; -webkit-touch-callout: none; }
 </style>
 </head>
 <body>
@@ -60,46 +34,105 @@ body { overflow: hidden; }
 <script>
 (function(){
   var s = document.getElementById('hojas');
-  var imgs = s.querySelectorAll('img');
-  var total = s.children.length;
+  var pages = Array.prototype.slice.call(s.children);
+  var total = pages.length;
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // Decodifica todas las hojas desde el inicio para que ninguna "salte" al aparecer
-  for (var i = 0; i < imgs.length; i++) {
-    imgs[i].loading = 'eager';
-    if (imgs[i].decode) { imgs[i].decode().catch(function(){}); }
-  }
-  function h() { return s.clientHeight; }
-  function cur() { return Math.round(s.scrollTop / h()); }
-  function clamp(i) { return Math.max(0, Math.min(total - 1, i)); }
-  function goTo(i) {
-    s.scrollTo({ top: clamp(i) * h(), behavior: reduce ? 'auto' : 'smooth' });
-  }
-  // Touch (celular): deslizamiento 100% nativo con CSS scroll-snap, sin JS que interfiera.
-  // Rueda del mouse (PC): una hoja por gesto.
-  var wheelLock = false;
-  s.addEventListener('wheel', function(e){
-    if (e.ctrlKey) return;
-    e.preventDefault();
-    if (wheelLock || Math.abs(e.deltaY) < 4) return;
-    wheelLock = true;
-    goTo(cur() + (e.deltaY > 0 ? 1 : -1));
-    setTimeout(function(){ wheelLock = false; }, 700);
-  }, { passive: false });
-  s.addEventListener('keydown', function(e){
-    var k = e.key, d = 0;
-    if (k === 'ArrowDown' || k === 'PageDown' || k === ' ') d = 1;
-    else if (k === 'ArrowUp' || k === 'PageUp') d = -1;
-    else if (k === 'Home') { e.preventDefault(); goTo(0); return; }
-    else if (k === 'End') { e.preventDefault(); goTo(total - 1); return; }
-    if (d) { e.preventDefault(); goTo(cur() + d); }
+  var DUR = reduce ? 0 : 320;
+  var idx = 0, H = 0, drag = 0, dragging = false, busy = false;
+  var EASE = 'transform ' + DUR + 'ms cubic-bezier(.22,.7,.2,1)';
+
+  pages.forEach(function(p){
+    var im = p.querySelector('img');
+    if (im) { im.loading = 'eager'; if (im.decode) im.decode().catch(function(){}); }
   });
+
+  function measure() {
+    H = window.innerHeight;
+    document.documentElement.style.setProperty('--vh', H + 'px');
+  }
+  // Solo las hojas vecinas son visibles; el resto queda oculto (nada "parpadea")
+  function render(animate) {
+    pages.forEach(function(p, i){
+      var off = i - idx;
+      var show = Math.abs(off) <= 1 && (dragging || animate || off === 0 || busy);
+      if (off === 0) show = true;
+      if (!dragging && !animate && !busy && off !== 0) show = false;
+      p.classList.toggle('vis', show);
+      p.style.transition = animate ? EASE : 'none';
+      p.style.transform = 'translate3d(0,' + (off * H + drag) + 'px,0)';
+    });
+  }
+  function clamp(i){ return Math.max(0, Math.min(total - 1, i)); }
+  function go(i) {
+    i = clamp(i);
+    drag = 0; dragging = false;
+    if (i === idx) { busy = true; render(true); finish(); return; }
+    busy = true; idx = i; render(true); finish();
+  }
+  var ft;
+  function finish() {
+    clearTimeout(ft);
+    ft = setTimeout(function(){ busy = false; render(false); }, DUR + 40);
+  }
+
+  // Touch
+  var y0 = 0, t0 = 0, lastY = 0, lastT = 0, vel = 0, tracking = false;
+  s.addEventListener('touchstart', function(e){
+    if (e.touches.length !== 1) return;
+    clearTimeout(ft); busy = false;
+    tracking = true; dragging = true;
+    y0 = lastY = e.touches[0].clientY; t0 = lastT = Date.now(); vel = 0; drag = 0;
+    render(false);
+  }, { passive: true });
+  s.addEventListener('touchmove', function(e){
+    if (!tracking) return;
+    e.preventDefault();
+    var y = e.touches[0].clientY, t = Date.now();
+    drag = y - y0;
+    // resistencia en los extremos
+    if ((idx === 0 && drag > 0) || (idx === total - 1 && drag < 0)) drag *= 0.25;
+    if (t > lastT) vel = (y - lastY) / (t - lastT);
+    lastY = y; lastT = t;
+    render(false);
+  }, { passive: false });
+  function end() {
+    if (!tracking) return;
+    tracking = false;
+    var d = drag, next = idx;
+    var fast = Math.abs(vel) > 0.35, far = Math.abs(d) > H * 0.18;
+    if ((fast || far) && d < 0) next = idx + 1;
+    else if ((fast || far) && d > 0) next = idx - 1;
+    go(next);
+  }
+  s.addEventListener('touchend', end, { passive: true });
+  s.addEventListener('touchcancel', end, { passive: true });
+
+  // Rueda (PC)
+  var lock = false;
+  s.addEventListener('wheel', function(e){
+    e.preventDefault();
+    if (lock || Math.abs(e.deltaY) < 4) return;
+    lock = true; go(idx + (e.deltaY > 0 ? 1 : -1));
+    setTimeout(function(){ lock = false; }, DUR + 250);
+  }, { passive: false });
+
+  // Teclado
+  window.addEventListener('keydown', function(e){
+    var k = e.key;
+    if (k === 'ArrowDown' || k === 'PageDown' || k === ' ') { e.preventDefault(); go(idx + 1); }
+    else if (k === 'ArrowUp' || k === 'PageUp') { e.preventDefault(); go(idx - 1); }
+    else if (k === 'Home') { e.preventDefault(); go(0); }
+    else if (k === 'End') { e.preventDefault(); go(total - 1); }
+  });
+
   var rt;
   window.addEventListener('resize', function(){
     clearTimeout(rt);
-    var i = cur();
-    rt = setTimeout(function(){ s.scrollTo({ top: i * h(), behavior: 'auto' }); }, 120);
+    rt = setTimeout(function(){ measure(); drag = 0; render(false); }, 80);
   });
-  try { s.focus({ preventScroll: true }); } catch (e) {}
+  window.addEventListener('orientationchange', function(){ setTimeout(function(){ measure(); render(false); }, 200); });
+
+  measure(); render(false);
 })();
 </script>
 </body>
